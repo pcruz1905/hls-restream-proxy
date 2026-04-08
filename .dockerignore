@@ -1,0 +1,11 @@
+.git
+.gitignore
+*.md
+LICENSE
+systemd/
+detect-headers.sh
+refresh-m3u.sh
+channels.conf
+.env
+*.log
+__pycache__/

@@ -39,26 +39,44 @@ Many free IPTV/HLS sources require specific HTTP headers (User-Agent, Referer) t
 
 ## Quick start
 
+### Docker (recommended)
+
 ```bash
-# 1. Clone
 git clone https://github.com/pcruz1905/hls-restream-proxy.git
 cd hls-restream-proxy
 
-# 2. Configure channels
 cp channels.conf.example channels.conf
 # Edit channels.conf with your channels
 
-# 3. Start the proxy
-export HLS_PROXY_PORT=8089
-export HLS_PROXY_REFERER="https://your-upstream-embed-domain.com/"
+docker compose -f docker-compose.example.yml up -d
+```
+
+### Docker one-liner (no clone)
+
+```bash
+docker run -d --name hls-proxy \
+  -p 8089:8089 \
+  -v ./channels.conf:/app/channels.conf:ro \
+  ghcr.io/pcruz1905/hls-restream-proxy:latest
+```
+
+### Manual (no Docker)
+
+```bash
+git clone https://github.com/pcruz1905/hls-restream-proxy.git
+cd hls-restream-proxy
+
+cp channels.conf.example channels.conf
+# Edit channels.conf with your channels
+
 python3 hls-proxy.py &
 
-# 4. Generate the M3U
+# Generate the M3U
 export M3U_OUTPUT=/path/to/jellyfin/config/iptv.m3u
 export HLS_PROXY_URL="http://YOUR_HOST_IP:8089"
 bash refresh-m3u.sh
 
-# 5. Add the M3U file as an M3U Tuner in your media server
+# Add the M3U file as an M3U Tuner in your media server
 ```
 
 ## Channel config format

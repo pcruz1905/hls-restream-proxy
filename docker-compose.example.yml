@@ -1,0 +1,15 @@
+services:
+  hls-proxy:
+    build: .
+    # Or use the published image:
+    # image: ghcr.io/pcruz1905/hls-restream-proxy:latest
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./channels.conf:/app/channels.conf:ro
+    environment:
+      - HLS_PROXY_PORT=8089
+      - HLS_PROXY_BIND=0.0.0.0
+      - HLS_ALLOWED_IPS=              # comma-separated, empty = allow all
+      - HLS_CACHE_TTL=3600
+    restart: unless-stopped
