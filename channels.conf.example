@@ -1,0 +1,23 @@
+# channels.conf — one channel per line
+#
+# Format (pipe-delimited):
+#   slug|Display Name|logo_url|Group Name|source_page_url|mode|referer
+#
+# Fields:
+#   slug         — unique channel ID (used in tvg-id)
+#   name         — display name shown in the media player
+#   logo         — URL to a channel logo image (PNG recommended)
+#   group        — group name for organizing channels
+#   source_url   — the web page that contains or links to the m3u8 stream
+#   mode         — extraction method: "iframe" (default) or "direct"
+#                    iframe = page has <iframe> → embed page has m3u8
+#                    direct = page itself contains the m3u8 URL
+#   referer      — (optional) override Referer sent when fetching the embed
+#
+# Lines starting with # are comments. Blank lines are ignored.
+#
+# Example channels (replace with your own):
+#
+# sporttv1|Sport TV 1|https://example.com/logo1.png|Sports|https://example.com/channels/sporttv1.php|iframe|
+# news24|News 24|https://example.com/logo2.png|News|https://example.com/live/news.php|iframe|
+# radio1|Radio Stream|https://example.com/radio.png|Radio|https://example.com/radio/stream.html|direct|

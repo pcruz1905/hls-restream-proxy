@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh M3U playlist periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=4h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

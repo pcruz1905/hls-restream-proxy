@@ -1,0 +1,4 @@
+channels.conf
+.env
+*.log
+__pycache__/

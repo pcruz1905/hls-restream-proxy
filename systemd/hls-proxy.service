@@ -1,0 +1,17 @@
+[Unit]
+Description=HLS Restream Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/hls-restream-proxy/hls-proxy.py
+Environment=HLS_PROXY_PORT=8089
+# Set these if your upstream requires them:
+# Environment=HLS_PROXY_REFERER=https://example.com/
+# Environment=HLS_PROXY_UA=Mozilla/5.0 ...
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh M3U playlist with fresh stream URLs
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash %h/hls-restream-proxy/refresh-m3u.sh
+# Override these via drop-in or Environment:
+# Environment=M3U_OUTPUT=/path/to/iptv.m3u
+# Environment=HLS_PROXY_URL=http://127.0.0.1:8089
+# Environment=CHANNELS_CONF=/path/to/channels.conf
+StandardOutput=journal
+StandardError=journal
