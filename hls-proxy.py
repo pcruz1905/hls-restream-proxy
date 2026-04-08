@@ -152,20 +152,41 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                 headers["Referer"] = referer
 
             req = urllib.request.Request(upstream_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            resp = urllib.request.urlopen(req, timeout=15)
+            content_type = resp.headers.get("Content-Type", "application/octet-stream")
+            is_playlist = upstream_url.endswith(".m3u8") or "mpegurl" in content_type.lower()
+
+            if is_playlist:
+                # Playlists are small — read fully to rewrite URLs
                 content = resp.read()
-                content_type = resp.headers.get("Content-Type", "application/octet-stream")
-
-            if b"#EXTM3U" in content or upstream_url.endswith(".m3u8") or "mpegurl" in content_type.lower():
-                content = self._rewrite_playlist(content, upstream_url)
-                content_type = "application/vnd.apple.mpegurl"
-
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(content)
+                resp.close()
+                if b"#EXTM3U" in content:
+                    content = self._rewrite_playlist(content, upstream_url)
+                    content_type = "application/vnd.apple.mpegurl"
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                # Segments (.ts) — stream chunk-by-chunk, never buffer fully
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache")
+                cl = resp.headers.get("Content-Length")
+                if cl:
+                    self.send_header("Content-Length", cl)
+                self.end_headers()
+                try:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                finally:
+                    resp.close()
 
         except Exception as e:
             self.send_error(502, f"Upstream error: {e}")
