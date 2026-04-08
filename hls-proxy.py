@@ -19,6 +19,7 @@ import time
 
 
 PORT = int(os.environ.get("HLS_PROXY_PORT", "8089"))
+BIND_ADDR = os.environ.get("HLS_PROXY_BIND", "127.0.0.1")  # localhost only by default
 UPSTREAM_UA = os.environ.get(
     "HLS_PROXY_UA",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -26,6 +27,8 @@ UPSTREAM_UA = os.environ.get(
 UPSTREAM_REFERER = os.environ.get("HLS_PROXY_REFERER", "")
 CHANNELS_CONF = os.environ.get("CHANNELS_CONF", "")
 CACHE_TTL = int(os.environ.get("HLS_CACHE_TTL", "3600"))  # 1 hour default
+# Comma-separated list of allowed client IPs (empty = allow all)
+ALLOWED_IPS = set(filter(None, os.environ.get("HLS_ALLOWED_IPS", "").split(",")))
 
 # Cache: slug -> {m3u8_url, embed_host, fetched_at}
 _channel_cache = {}
@@ -114,6 +117,13 @@ def _get_channel_m3u8(slug):
 
 class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        # IP allowlist check
+        if ALLOWED_IPS:
+            client_ip = self.client_address[0].removeprefix("::ffff:")
+            if client_ip not in ALLOWED_IPS:
+                self.send_error(403, "Forbidden")
+                return
+
         parsed = urllib.parse.urlparse(self.path)
 
         if parsed.path == "/health":
@@ -141,9 +151,15 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             return
 
         try:
+            # Only proxy to known upstream hosts (learned from /channel/ scrapes)
+            # Prevents abuse as an open proxy
+            upstream_host = re.match(r"https?://[^/]+", upstream_url)
+            if _referer_map and upstream_host and upstream_host.group(0) not in _referer_map:
+                self.send_error(403, "Unknown upstream host")
+                return
+
             # Use learned referer from /channel/ scrapes, fall back to env var
             referer = UPSTREAM_REFERER
-            upstream_host = re.match(r"https?://[^/]+", upstream_url)
             if upstream_host and upstream_host.group(0) in _referer_map:
                 referer = _referer_map[upstream_host.group(0)]
 
@@ -254,12 +270,16 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    server = http.server.HTTPServer(("0.0.0.0", PORT), HLSProxyHandler)
-    print(f"[hls-proxy] Listening on port {PORT}")
+    server = http.server.HTTPServer((BIND_ADDR, PORT), HLSProxyHandler)
+    print(f"[hls-proxy] Listening on {BIND_ADDR}:{PORT}")
+    if ALLOWED_IPS:
+        print(f"[hls-proxy] Allowed IPs: {', '.join(ALLOWED_IPS)}")
+    else:
+        print(f"[hls-proxy] WARNING: No IP allowlist set (HLS_ALLOWED_IPS). All clients accepted.")
     print(f"[hls-proxy] Endpoints:")
-    print(f"  http://<host>:{PORT}/proxy?url=<encoded_url>  — proxy with headers")
-    print(f"  http://<host>:{PORT}/channel/<slug>           — auto-resolve fresh m3u8")
-    print(f"  http://<host>:{PORT}/health                   — health check")
+    print(f"  /proxy?url=<encoded_url>  — proxy with headers")
+    print(f"  /channel/<slug>           — auto-resolve fresh m3u8")
+    print(f"  /health                   — health check")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

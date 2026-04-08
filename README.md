@@ -234,8 +234,10 @@ curl -sL -A "Mozilla/5.0" "https://streaming-site.com/channel.php" \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HLS_PROXY_PORT` | `8089` | Proxy listen port |
+| `HLS_PROXY_BIND` | `127.0.0.1` | Bind address (localhost only by default) |
 | `HLS_PROXY_UA` | Chrome UA string | User-Agent sent to upstream |
 | `HLS_PROXY_REFERER` | _(empty)_ | Fallback Referer header (auto-learned from /channel/) |
+| `HLS_ALLOWED_IPS` | _(empty)_ | Comma-separated client IP allowlist (empty = all) |
 | `CHANNELS_CONF` | `./channels.conf` | Path to channel config file |
 | `HLS_CACHE_TTL` | `3600` | Seconds to cache scraped m3u8 URLs (per channel) |
 | `M3U_OUTPUT` | `/tmp/iptv.m3u` | Output M3U file path |
