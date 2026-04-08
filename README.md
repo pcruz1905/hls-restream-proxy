@@ -10,6 +10,7 @@ Many free IPTV/HLS sources require specific HTTP headers (User-Agent, Referer) t
 |------|---------|
 | `hls-proxy.py` | HTTP reverse proxy that adds headers to upstream HLS requests |
 | `refresh-m3u.sh` | Scrapes source pages, extracts m3u8 URLs, writes M3U playlist |
+| `detect-headers.sh` | Auto-detects which HTTP headers a stream requires |
 | `channels.conf` | Your channel list (slug, name, logo, group, source URL) |
 
 ## How it works
@@ -103,6 +104,50 @@ Then set `HLS_PROXY_URL=http://172.x.0.1:8089`.
 ## Finding the required headers (User-Agent & Referer)
 
 Every streaming site is different. Here's how to figure out which headers your upstream needs:
+
+### Automatic detection (recommended)
+
+Run the detector tool — it follows the iframe chain, tests every header combination on both the m3u8 playlist and .ts segments, and tells you exactly what you need:
+
+```bash
+./detect-headers.sh "https://streaming-site.com/channel.php"
+```
+
+Output:
+```
+=== HLS Header Detector ===
+
+[1/4] Extracting iframe from page...
+  iframe: https://embed-domain.com/embed/abc123
+  embed host: https://embed-domain.com
+
+[1/4] Extracting m3u8 from embed page...
+  m3u8: https://cdn.example.com/hls/abc123.m3u8?s=token&e=123
+
+[2/4] Testing header combinations on m3u8 playlist...
+  403  no-UA
+  200  UA
+  200  UA+Ref(https://embed-domain.com/)
+
+[3/4] Testing header combinations on .ts segments...
+  403  no-UA
+  403  UA
+  200  UA+Ref(https://embed-domain.com/)
+
+[4/4] Recommended configuration:
+  User-Agent + Referer
+
+  export HLS_PROXY_REFERER="https://embed-domain.com/"
+```
+
+You can also pass a direct m3u8 URL:
+```bash
+./detect-headers.sh "https://cdn.example.com/hls/stream.m3u8?token=xxx" --direct
+```
+
+### Manual detection
+
+If the auto-detector can't find the m3u8 (some sites use heavy JS), use browser DevTools:
 
 ### Step 1: Open DevTools Network tab
 
