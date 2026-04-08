@@ -25,9 +25,12 @@ Many free IPTV/HLS sources require specific HTTP headers (User-Agent, Referer) t
                   • Referer
 ```
 
-1. `refresh-m3u.sh` scrapes source pages → extracts fresh m3u8 URLs → wraps them through the proxy → writes the M3U file
-2. `hls-proxy.py` proxies all requests (playlists + segments) adding the required headers
-3. Your media server reads the M3U file and plays streams through the proxy
+1. `refresh-m3u.sh` generates an M3U file with stable `/channel/<slug>` URLs pointing to the proxy
+2. When Jellyfin requests `/channel/sporttv1`, the proxy scrapes a fresh m3u8 URL on the fly (cached for 1 hour)
+3. The proxy injects the required headers and rewrites the playlist so `.ts` segments also go through it
+4. The proxy auto-learns the correct Referer for each upstream host — no manual configuration needed
+
+**No more expired tokens** — the M3U URLs never change, the proxy handles token refresh transparently.
 
 ## Requirements
 
@@ -232,10 +235,11 @@ curl -sL -A "Mozilla/5.0" "https://streaming-site.com/channel.php" \
 |----------|---------|-------------|
 | `HLS_PROXY_PORT` | `8089` | Proxy listen port |
 | `HLS_PROXY_UA` | Chrome UA string | User-Agent sent to upstream |
-| `HLS_PROXY_REFERER` | _(empty)_ | Referer header sent to upstream |
+| `HLS_PROXY_REFERER` | _(empty)_ | Fallback Referer header (auto-learned from /channel/) |
+| `CHANNELS_CONF` | `./channels.conf` | Path to channel config file |
+| `HLS_CACHE_TTL` | `3600` | Seconds to cache scraped m3u8 URLs (per channel) |
 | `M3U_OUTPUT` | `/tmp/iptv.m3u` | Output M3U file path |
 | `HLS_PROXY_URL` | `http://127.0.0.1:8089` | Proxy URL written into M3U |
-| `CHANNELS_CONF` | `./channels.conf` | Path to channel config file |
 
 ## License
 
