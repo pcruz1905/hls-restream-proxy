@@ -64,7 +64,7 @@ OUTPUT="#EXTM3U"
 SUCCESS=0
 FAIL=0
 
-while IFS='|' read -r slug name logo group source_url mode referer; do
+while IFS='|' read -r slug name chno logo group source_url mode referer; do
   # Skip comments and blank lines
   [[ -z "$slug" || "$slug" == \#* ]] && continue
 
@@ -77,7 +77,7 @@ while IFS='|' read -r slug name logo group source_url mode referer; do
   if [[ $rc -eq 0 && -n "$m3u8" && "$m3u8" == http* ]]; then
     echo "OK"
     encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${m3u8}', safe=''))")
-    OUTPUT+=$'\n\n'"#EXTINF:-1 tvg-id=\"${slug}\" tvg-name=\"${name}\" tvg-logo=\"${logo}\" group-title=\"${group}\",${name}"
+    OUTPUT+=$'\n\n'"#EXTINF:-1 tvg-id=\"${slug}\" tvg-chno=\"${chno}\" tvg-name=\"${name}\" tvg-logo=\"${logo}\" group-title=\"${group}\",${name}"
     OUTPUT+=$'\n'"${PROXY_HOST}/proxy?url=${encoded}"
     SUCCESS=$((SUCCESS + 1))
   else
