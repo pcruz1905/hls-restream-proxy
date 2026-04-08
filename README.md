@@ -1,6 +1,6 @@
 # hls-restream-proxy
 
-Lightweight HLS restream toolkit for self-hosted media servers (Jellyfin, Emby, Plex).
+Lightweight HLS restream toolkit for self-hosted media servers.
 
 Many free IPTV/HLS sources require specific HTTP headers (User-Agent, Referer) that media servers don't send. This proxy sits between your media server and the upstream, injecting the required headers and rewriting m3u8 playlists so all segment requests also go through the proxy.
 
@@ -260,6 +260,43 @@ curl -sL -A "Mozilla/5.0" "https://streaming-site.com/channel.php" \
 | `HLS_CACHE_TTL` | `3600` | Seconds to cache scraped m3u8 URLs (per channel) |
 | `M3U_OUTPUT` | `/tmp/iptv.m3u` | Output M3U file path |
 | `HLS_PROXY_URL` | `http://127.0.0.1:8089` | Proxy URL written into M3U |
+
+## Media server compatibility
+
+| Media server | M3U support | How to use |
+|-------------|------------|-----------|
+| **Jellyfin** | Native | Add M3U file as a tuner in Live TV settings |
+| **Channels DVR** | Native | Add as custom M3U source |
+| **Plex** | Via proxy | Use [Threadfin](https://github.com/Threadfin/Threadfin) or [xTeVe](https://github.com/xteve-project/xTeVe) to expose M3U as a virtual tuner |
+| **Emby** | Via proxy | Same as Plex — use Threadfin or xTeVe |
+| **VLC** | Direct | `vlc http://YOUR_HOST:8089/channel/sporttv1` |
+| **mpv** | Direct | `mpv http://YOUR_HOST:8089/channel/sporttv1` |
+| **Any HLS player** | Direct | Point at `http://YOUR_HOST:8089/channel/<slug>` |
+
+## FAQ
+
+**Why not a Jellyfin plugin?**
+Standalone scripts work with any media server and any player. No .NET dependency, no breakage when Jellyfin updates, and it also works with VLC, mpv, or any HLS-capable player.
+
+**Does this add latency?**
+No. The proxy is passthrough only — it forwards the exact same bytes from the upstream, no transcoding. The only added latency is the network hop through the proxy (typically <1ms on localhost).
+
+**Does this work with Plex or Emby?**
+Not directly — Plex and Emby don't read M3U files. You need [Threadfin](https://github.com/Threadfin/Threadfin) or [xTeVe](https://github.com/xteve-project/xTeVe) between this proxy and Plex/Emby. These tools make M3U sources appear as a local TV tuner (HDHomeRun) that Plex/Emby can use.
+
+**Can I use this with VLC or mpv?**
+Yes. The `/channel/<slug>` endpoint returns a standard HLS playlist. Any player that supports HLS can play it directly:
+```bash
+vlc http://localhost:8089/channel/sporttv1
+mpv http://localhost:8089/channel/sporttv1
+```
+
+## See also
+
+- [Threadfin](https://github.com/Threadfin/Threadfin) — M3U proxy for Plex/Jellyfin/Emby, makes M3U look like a local tuner
+- [xTeVe](https://github.com/xteve-project/xTeVe) — M3U proxy for Plex DVR and Emby Live TV
+- [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) — IPTV stream management and distribution
+- [Restreamer](https://github.com/datarhei/restreamer) — Full-featured self-hosted streaming server with web UI
 
 ## License
 
