@@ -37,7 +37,7 @@ Many free IPTV/HLS sources require specific HTTP headers (User-Agent, Referer) t
 
 ```bash
 # 1. Clone
-git clone https://github.com/YOUR_USER/hls-restream-proxy.git
+git clone https://github.com/pcruz1905/hls-restream-proxy.git
 cd hls-restream-proxy
 
 # 2. Configure channels
@@ -62,7 +62,7 @@ bash refresh-m3u.sh
 `channels.conf` — one channel per line, pipe-delimited:
 
 ```
-slug|Display Name|logo_url|Group|source_page_url|mode|referer
+slug|Display Name|chno|logo_url|Group|source_page_url|mode|referer
 ```
 
 - **mode**: `iframe` (default) — page has an iframe whose embed contains the m3u8. `direct` — page itself contains the m3u8 URL.
@@ -99,6 +99,87 @@ docker inspect <container> | grep Gateway
 ```
 
 Then set `HLS_PROXY_URL=http://172.x.0.1:8089`.
+
+## Finding the required headers (User-Agent & Referer)
+
+Every streaming site is different. Here's how to figure out which headers your upstream needs:
+
+### Step 1: Open DevTools Network tab
+
+1. Open the streaming site in Chrome/Firefox
+2. Press `F12` → **Network** tab
+3. Filter by `m3u8` or `media`
+4. Play the stream — you'll see `.m3u8` and `.ts` requests appear
+
+### Step 2: Find the m3u8 request
+
+Click on the `.m3u8` request and look at the **Request Headers**. Note down:
+- **User-Agent** — usually a standard browser UA
+- **Referer** — this is the key one, usually the embed/iframe domain (not the main site)
+- **Origin** — sometimes needed instead of Referer
+
+### Step 3: Test with curl
+
+```bash
+# Get a fresh m3u8 URL from the Network tab, then test:
+
+# Without headers (probably 403)
+curl -o /dev/null -w "%{http_code}" "https://example.com/hls/stream.m3u8?token=xxx"
+
+# With User-Agent only
+curl -o /dev/null -w "%{http_code}" -A "Mozilla/5.0" "https://example.com/hls/stream.m3u8?token=xxx"
+
+# With User-Agent + Referer
+curl -o /dev/null -w "%{http_code}" -A "Mozilla/5.0" \
+  -e "https://embed-domain.com/" \
+  "https://example.com/hls/stream.m3u8?token=xxx"
+```
+
+Try each combination until you get `200`. That tells you which headers are required.
+
+### Step 4: Test .ts segments too
+
+The playlist (`.m3u8`) and segments (`.ts`) may need different headers. Grab a `.ts` URL from the playlist and repeat the curl test:
+
+```bash
+# Get a segment URL from the m3u8 content
+curl -s -A "Mozilla/5.0" -e "https://embed-domain.com/" \
+  "https://example.com/hls/stream.m3u8?token=xxx" | grep ".ts" | head -1
+
+# Test that segment
+curl -o /dev/null -w "%{http_code}" -A "Mozilla/5.0" \
+  -e "https://embed-domain.com/" \
+  "https://example.com/hls/segment-12345.ts"
+```
+
+### Step 5: Configure the proxy
+
+Once you know the required headers:
+
+```bash
+export HLS_PROXY_UA="Mozilla/5.0 ..."        # usually the default is fine
+export HLS_PROXY_REFERER="https://embed-domain.com/"  # the iframe/embed host
+```
+
+### Quick reference: common patterns
+
+| Site pattern | Usually needs |
+|-------------|---------------|
+| Page → iframe → m3u8 | Referer = iframe embed domain |
+| Direct m3u8 with token | User-Agent only |
+| Cloudflare-protected | User-Agent + Referer + sometimes Origin |
+
+### Tip: find the iframe chain automatically
+
+Most sites follow this pattern: **page → iframe → embed page → m3u8**
+
+```bash
+# Extract the iframe src
+curl -sL -A "Mozilla/5.0" "https://streaming-site.com/channel.php" \
+  | grep -oP 'iframe\s+src="\K[^"]+'
+
+# That gives you the embed domain for the Referer
+```
 
 ## Environment variables
 
