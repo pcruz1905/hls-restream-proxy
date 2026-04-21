@@ -29,11 +29,18 @@ CHANNELS_CONF = os.environ.get("CHANNELS_CONF", "")
 CACHE_TTL = int(os.environ.get("HLS_CACHE_TTL", "3600"))  # 1 hour default
 # Comma-separated list of allowed client IPs (empty = allow all)
 ALLOWED_IPS = set(filter(None, os.environ.get("HLS_ALLOWED_IPS", "").split(",")))
+# Default BANDWIDTH (bits/sec) advertised in the master playlist when a channel
+# has no explicit value. Set to avoid Jellyfin's ~20 Mbps default guess on
+# single-variant media playlists, which forces transcoding on bandwidth-limited
+# clients. 0 / unset = do not emit a master wrapper.
+DEFAULT_BANDWIDTH = int(os.environ.get("HLS_DEFAULT_BANDWIDTH", "0")) or 0
 
 # Cache: slug -> {m3u8_url, embed_host, fetched_at}
 _channel_cache = {}
 # Maps upstream host -> referer (learned from /channel/ scrapes)
 _referer_map = {}
+# Per-channel declared bandwidth (bits/sec) from channels.conf field 9
+_channel_bandwidth = {}
 
 
 def _load_channels():
@@ -55,6 +62,12 @@ def _load_channels():
             parts = line.split("|")
             if len(parts) >= 6:
                 channels[parts[0]] = parts[5]  # slug -> source_url
+                # Optional 9th field: declared BANDWIDTH in bits/sec
+                if len(parts) >= 9 and parts[8].strip():
+                    try:
+                        _channel_bandwidth[parts[0]] = int(parts[8].strip())
+                    except ValueError:
+                        pass
     return channels
 
 
@@ -133,10 +146,13 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"ok")
             return
 
-        # /channel/<slug> — resolve fresh m3u8 on the fly
+        # /channel/<slug>              — master playlist (if bandwidth declared)
+        # /channel/<slug>/media.m3u8   — underlying media playlist
         if parsed.path.startswith("/channel/"):
-            slug = parsed.path.split("/channel/", 1)[1].strip("/")
-            self._handle_channel(slug)
+            tail = parsed.path[len("/channel/"):].strip("/").split("/", 1)
+            slug = tail[0]
+            is_media_request = len(tail) > 1 and tail[1] == "media.m3u8"
+            self._handle_channel(slug, is_media_request=is_media_request)
             return
 
         if parsed.path != "/proxy":
@@ -207,8 +223,16 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error(502, f"Upstream error: {e}")
 
-    def _handle_channel(self, slug):
-        """Resolve a fresh m3u8 for a channel and proxy it."""
+    def _handle_channel(self, slug, is_media_request: bool = False):
+        """Resolve a fresh m3u8 for a channel and proxy it.
+
+        When a channel has a declared BANDWIDTH (either via channels.conf
+        field 9 or HLS_DEFAULT_BANDWIDTH) and the upstream is a single-variant
+        media playlist, the /channel/<slug> response is wrapped in a thin
+        master playlist carrying that BANDWIDTH. This prevents Jellyfin from
+        falling back to its ~20 Mbps default guess and force-transcoding on
+        bandwidth-capped clients.
+        """
         m3u8_url, embed_host = _get_channel_m3u8(slug)
         if not m3u8_url:
             self.send_error(404, f"Channel not found or scrape failed: {slug}")
@@ -222,6 +246,23 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             })
             with urllib.request.urlopen(req, timeout=15) as resp:
                 content = resp.read()
+
+            bandwidth = _channel_bandwidth.get(slug) or DEFAULT_BANDWIDTH
+            is_master = b"#EXT-X-STREAM-INF" in content
+
+            if bandwidth and not is_master and not is_media_request:
+                master = (
+                    "#EXTM3U\n"
+                    f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}\n"
+                    f"/channel/{slug}/media.m3u8\n"
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(master)
+                return
 
             content = self._rewrite_playlist(content, m3u8_url)
 
@@ -277,9 +318,10 @@ def main():
     else:
         print(f"[hls-proxy] WARNING: No IP allowlist set (HLS_ALLOWED_IPS). All clients accepted.")
     print(f"[hls-proxy] Endpoints:")
-    print(f"  /proxy?url=<encoded_url>  — proxy with headers")
-    print(f"  /channel/<slug>           — auto-resolve fresh m3u8")
-    print(f"  /health                   — health check")
+    print(f"  /proxy?url=<encoded_url>       — proxy with headers")
+    print(f"  /channel/<slug>                — auto-resolve fresh m3u8 (master if bandwidth set)")
+    print(f"  /channel/<slug>/media.m3u8     — underlying media playlist")
+    print(f"  /health                        — health check")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

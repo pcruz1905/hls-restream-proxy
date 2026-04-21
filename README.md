@@ -258,6 +258,7 @@ curl -sL -A "Mozilla/5.0" "https://streaming-site.com/channel.php" \
 | `HLS_ALLOWED_IPS` | _(empty)_ | Comma-separated client IP allowlist (empty = all) |
 | `CHANNELS_CONF` | `./channels.conf` | Path to channel config file |
 | `HLS_CACHE_TTL` | `3600` | Seconds to cache scraped m3u8 URLs (per channel) |
+| `HLS_DEFAULT_BANDWIDTH` | _(empty)_ | Fallback BANDWIDTH (bits/sec) advertised in the master playlist when a channel has no value set in `channels.conf`. Prevents Jellyfin's ~20 Mbps default guess. |
 | `M3U_OUTPUT` | `/tmp/iptv.m3u` | Output M3U file path |
 | `HLS_PROXY_URL` | `http://127.0.0.1:8089` | Proxy URL written into M3U |
 
@@ -280,6 +281,31 @@ Standalone scripts work with any media server and any player. No .NET dependency
 
 **Does this add latency?**
 No. The proxy is passthrough only — it forwards the exact same bytes from the upstream, no transcoding. The only added latency is the network hop through the proxy (typically <1ms on localhost).
+
+**Do I still need to transcode in Jellyfin?**
+The proxy itself never transcodes — it only fixes headers so Jellyfin can fetch the stream. Whether Jellyfin transcodes afterwards depends on the stream and the client:
+
+- Most free HLS streams are H.264 + AAC, which direct-play on virtually every client. No transcode.
+- If Jellyfin still transcodes, check the "Playback info" overlay in the web client. Common causes:
+  1. **Bitrate cap too low** — Jellyfin defaults to ~20 Mbps when the playlist has no `BANDWIDTH` hint, so any bandwidth limit below that triggers a transcode. Fix it by declaring the real bitrate — see the bitrate FAQ below.
+  2. **Unsupported codec** (e.g. HEVC on older Chromecasts) — no way around this, the client genuinely can't play it.
+  3. **Forced transcoding in user settings** — Jellyfin Dashboard → Playback → raise the streaming bitrate limits.
+
+**Jellyfin thinks my stream is 20 Mbps when it's really ~6 Mbps (or similar)?**
+This happens when the upstream returns a single-variant media playlist with no `#EXT-X-STREAM-INF:BANDWIDTH` tag. Jellyfin can't see the real bitrate and defaults to a worst-case ~20 Mbps, which forces transcoding on any client with a stricter bandwidth cap. Same issue that hits ErsatzTV and Dispatcharr outputs.
+
+Fix: declare the real bitrate as the 9th pipe-delimited field in `channels.conf`:
+
+```
+sporttv1|Sport TV 1|1|logo.png|Sports|https://...|iframe||6000000
+```
+
+The proxy then wraps the stream in a thin master playlist with that `BANDWIDTH`, and Jellyfin reads the correct value. The underlying media playlist stays reachable at `/channel/<slug>/media.m3u8`.
+
+Or set a global default for all channels:
+```bash
+export HLS_DEFAULT_BANDWIDTH=6000000
+```
 
 **Does this work with Plex or Emby?**
 Not directly — Plex and Emby don't read M3U files. You need [Threadfin](https://github.com/Threadfin/Threadfin) or [xTeVe](https://github.com/xteve-project/xTeVe) between this proxy and Plex/Emby. These tools make M3U sources appear as a local TV tuner (HDHomeRun) that Plex/Emby can use.

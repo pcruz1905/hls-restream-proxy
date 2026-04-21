@@ -1,7 +1,7 @@
 # channels.conf — one channel per line
 #
 # Format (pipe-delimited):
-#   slug|Display Name|chno|logo_url|Group Name|source_page_url|mode|referer
+#   slug|Display Name|chno|logo_url|Group Name|source_page_url|mode|referer|bandwidth
 #
 # Fields:
 #   slug         — unique channel ID (used in tvg-id)
@@ -14,11 +14,16 @@
 #                    iframe = page has <iframe> → embed page has m3u8
 #                    direct = page itself contains the m3u8 URL
 #   referer      — (optional) override Referer sent when fetching the embed
+#   bandwidth    — (optional) real stream bitrate in bits/sec (e.g. 6000000
+#                  for 6 Mbps). When set, the proxy wraps the stream in a
+#                  master playlist with this BANDWIDTH so Jellyfin reads the
+#                  correct value instead of its ~20 Mbps default guess. Leave
+#                  blank if the upstream is already a master playlist.
 #
 # Lines starting with # are comments. Blank lines are ignored.
 #
 # Example channels (replace with your own):
 #
-# sporttv1|Sport TV 1|1|https://example.com/logo1.png|Sports|https://example.com/channels/sporttv1.php|iframe|
-# news24|News 24|2|https://example.com/logo2.png|News|https://example.com/live/news.php|iframe|
-# radio1|Radio Stream|3|https://example.com/radio.png|Radio|https://example.com/radio/stream.html|direct|
+# sporttv1|Sport TV 1|1|https://example.com/logo1.png|Sports|https://example.com/channels/sporttv1.php|iframe||6000000
+# news24|News 24|2|https://example.com/logo2.png|News|https://example.com/live/news.php|iframe||4000000
+# radio1|Radio Stream|3|https://example.com/radio.png|Radio|https://example.com/radio/stream.html|direct||
