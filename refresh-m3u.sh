@@ -32,9 +32,13 @@ if [[ ! -f "$CONF_FILE" ]]; then
 fi
 
 # --- Extract m3u8 from a source page ---
-# Supports two extraction modes:
-#   iframe  — page contains <iframe src="...">, embed page contains m3u8
-#   direct  — page itself contains the m3u8 URL
+# Supports three extraction modes:
+#   iframe   — page contains <iframe src="...">, embed page contains m3u8
+#   direct   — page itself contains the m3u8 URL
+#   literal  — source_url IS the m3u8 URL; skip scraping entirely. Use this for
+#              token-bearing streams where the m3u8 is produced off-box (e.g. a
+#              site's API or a browser-side JS decryptor) and you only need the
+#              proxy to inject Referer/User-Agent headers on the segment fetches.
 extract_m3u8() {
   local page_url="$1"
   local mode="${2:-iframe}"
@@ -54,6 +58,9 @@ extract_m3u8() {
   elif [[ "$mode" == "direct" ]]; then
     curl -sL --max-time 15 -A "$UA" "$page_url" \
       | grep -oP "https?://[^\"\x27\s]+\.m3u8[^\"\x27\s]*" | head -1
+
+  elif [[ "$mode" == "literal" ]]; then
+    printf '%s\n' "$page_url"
   fi
 }
 

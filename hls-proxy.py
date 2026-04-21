@@ -37,10 +37,14 @@ DEFAULT_BANDWIDTH = int(os.environ.get("HLS_DEFAULT_BANDWIDTH", "0")) or 0
 
 # Cache: slug -> {m3u8_url, embed_host, fetched_at}
 _channel_cache = {}
-# Maps upstream host -> referer (learned from /channel/ scrapes)
+# Maps upstream host -> referer (learned from /channel/ scrapes + literal mode preload)
 _referer_map = {}
 # Per-channel declared bandwidth (bits/sec) from channels.conf field 9
 _channel_bandwidth = {}
+# Per-channel extraction mode from channels.conf field 7 ("iframe" | "direct" | "literal")
+_channel_mode = {}
+# Per-channel declared referer from channels.conf field 8 (used by literal mode)
+_channel_referer = {}
 
 
 def _load_channels():
@@ -61,11 +65,25 @@ def _load_channels():
                 continue
             parts = line.split("|")
             if len(parts) >= 6:
-                channels[parts[0]] = parts[5]  # slug -> source_url
+                slug = parts[0]
+                source_url = parts[5]
+                channels[slug] = source_url
+                mode = parts[6].strip().lower() if len(parts) >= 7 and parts[6].strip() else "iframe"
+                referer = parts[7].strip() if len(parts) >= 8 and parts[7].strip() else ""
+                _channel_mode[slug] = mode
+                if referer:
+                    _channel_referer[slug] = referer
+                # Literal mode: source_url IS the m3u8. Pre-seed _referer_map so
+                # /proxy?url=... requests for this upstream host use the right
+                # Referer without needing a successful /channel/ scrape first.
+                if mode == "literal" and referer:
+                    upstream_host = re.match(r"https?://[^/]+", source_url)
+                    if upstream_host:
+                        _referer_map[upstream_host.group(0)] = referer
                 # Optional 9th field: declared BANDWIDTH in bits/sec
                 if len(parts) >= 9 and parts[8].strip():
                     try:
-                        _channel_bandwidth[parts[0]] = int(parts[8].strip())
+                        _channel_bandwidth[slug] = int(parts[8].strip())
                     except ValueError:
                         pass
     return channels
@@ -117,6 +135,14 @@ def _get_channel_m3u8(slug):
     source_url = channels.get(slug)
     if not source_url:
         return None, None
+
+    # Literal mode: source_url is the m3u8 itself; skip scraping. Treat the
+    # declared referer as the "embed host" proxy so downstream /proxy calls use it.
+    if _channel_mode.get(slug) == "literal":
+        referer = _channel_referer.get(slug, "")
+        embed_host = referer.rstrip("/") if referer else ""
+        _channel_cache[slug] = {"m3u8_url": source_url, "embed_host": embed_host, "fetched_at": now}
+        return source_url, embed_host
 
     m3u8, embed_host = _scrape_m3u8(source_url)
     if m3u8:

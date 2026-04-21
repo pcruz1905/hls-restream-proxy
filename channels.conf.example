@@ -9,11 +9,19 @@
 #   chno         — channel number for ordering in the Channels tab
 #   logo         — URL to a channel logo image (PNG recommended)
 #   group        — group name for organizing channels
-#   source_url   — the web page that contains or links to the m3u8 stream
-#   mode         — extraction method: "iframe" (default) or "direct"
-#                    iframe = page has <iframe> → embed page has m3u8
-#                    direct = page itself contains the m3u8 URL
-#   referer      — (optional) override Referer sent when fetching the embed
+#   source_url   — the web page that contains or links to the m3u8 stream,
+#                  OR (in literal mode) the m3u8 URL itself
+#   mode         — extraction method: "iframe" (default), "direct", or "literal"
+#                    iframe  = page has <iframe> → embed page has m3u8
+#                    direct  = page itself contains the m3u8 URL
+#                    literal = source_url IS the m3u8 URL (no scraping). Use
+#                              this for token-bearing streams where you resolve
+#                              the m3u8 out-of-band (e.g. a site's API or a
+#                              browser JS decryptor). The referer field MUST be
+#                              set so upstream segment fetches succeed.
+#   referer      — (optional) override Referer sent when fetching the embed.
+#                  In literal mode this is required and is sent as the Referer
+#                  on every upstream fetch for that m3u8's host.
 #   bandwidth    — (optional) real stream bitrate in bits/sec (e.g. 6000000
 #                  for 6 Mbps). When set, the proxy wraps the stream in a
 #                  master playlist with this BANDWIDTH so Jellyfin reads the
@@ -27,3 +35,4 @@
 # sporttv1|Sport TV 1|1|https://example.com/logo1.png|Sports|https://example.com/channels/sporttv1.php|iframe||6000000
 # news24|News 24|2|https://example.com/logo2.png|News|https://example.com/live/news.php|iframe||4000000
 # radio1|Radio Stream|3|https://example.com/radio.png|Radio|https://example.com/radio/stream.html|direct||
+# afl|Aussie Rules|4|https://example.com/logo4.png|Sports|https://cdn.example.com/secure/TOKEN/playlist.m3u8|literal|https://embed.example.com/|
