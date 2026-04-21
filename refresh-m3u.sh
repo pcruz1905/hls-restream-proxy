@@ -76,7 +76,8 @@ while IFS='|' read -r slug name chno logo group source_url mode referer; do
 
   if [[ $rc -eq 0 && -n "$m3u8" && "$m3u8" == http* ]]; then
     echo "OK"
-    encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${m3u8}', safe=''))")
+    # Pass the URL via env var to keep remote data out of the python -c source (avoids RCE via crafted m3u8).
+    encoded=$(M3U8="$m3u8" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["M3U8"], safe=""))')
     OUTPUT+=$'\n\n'"#EXTINF:-1 tvg-id=\"${slug}\" tvg-chno=\"${chno}\" tvg-name=\"${name}\" tvg-logo=\"${logo}\" group-title=\"${group}\",${name}"
     OUTPUT+=$'\n'"${PROXY_HOST}/proxy?url=${encoded}"
     SUCCESS=$((SUCCESS + 1))
