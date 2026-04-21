@@ -155,7 +155,10 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             self._handle_channel(slug, is_media_request=is_media_request)
             return
 
-        if parsed.path != "/proxy":
+        # Accept /proxy and /proxy.<ext>. The extension suffix is appended when
+        # rewriting segment URLs so ffmpeg's HLS demuxer accepts them under its
+        # allowed_segment_extensions whitelist (default: ts,m4s,mp4,aac,m3u8,…).
+        if not (parsed.path == "/proxy" or parsed.path.startswith("/proxy.")):
             self.send_error(404)
             return
 
@@ -303,7 +306,13 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             full = url
         else:
             full = base_url + url
-        return f"/proxy?url={urllib.parse.quote(full, safe='')}"
+        # Mirror the upstream file extension onto the proxy path. FFmpeg's HLS
+        # demuxer checks the path (not the query) against allowed_segment_extensions,
+        # so /proxy?url=... gets rejected while /proxy.ts?url=... is accepted.
+        upstream_path = urllib.parse.urlparse(full).path
+        ext_match = re.search(r"\.([A-Za-z0-9]{1,5})$", upstream_path)
+        ext = f".{ext_match.group(1).lower()}" if ext_match else ".ts"
+        return f"/proxy{ext}?url={urllib.parse.quote(full, safe='')}"
 
     def log_message(self, format, *args):
         if args and "200" not in str(args[0]) and "206" not in str(args[0]):
