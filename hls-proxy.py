@@ -264,6 +264,31 @@ def _get_channel_m3u8(slug):
 
 
 class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
+    # Advertise HTTP/1.1 so clients (e.g. .NET HttpClient in Jellyfin) get
+    # proper response framing. Combined with explicit Content-Length and
+    # Connection: close below, this avoids "Connection reset by peer"
+    # errors on clients that expect a well-framed HTTP/1.1 response.
+    protocol_version = "HTTP/1.1"
+
+    def _write_body(self, status: int, content_type: str, body: bytes, extra_headers=None) -> None:
+        """Send a fully-buffered response with Content-Length and Connection: close.
+
+        Also swallows BrokenPipeError / ConnectionResetError when the client
+        disconnects mid-write — these are expected for players and bots that
+        probe the playlist and close early; they are not proxy bugs.
+        """
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            for key, value in (extra_headers or []):
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         # IP allowlist check
         if ALLOWED_IPS:
@@ -275,10 +300,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
 
         if parsed.path == "/health":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"ok")
+            self._write_body(200, "text/plain", b"ok")
             return
 
         if parsed.path == "/":
@@ -341,18 +363,19 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                 if b"#EXTM3U" in content:
                     content = self._rewrite_playlist(content, upstream_url)
                     content_type = "application/vnd.apple.mpegurl"
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                self.wfile.write(content)
+                self._write_body(200, content_type, content, [
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Cache-Control", "no-cache"),
+                ])
             else:
-                # Segments (.ts) — stream chunk-by-chunk, never buffer fully
+                # Segments (.ts) — stream chunk-by-chunk, never buffer fully.
+                # Content-Length comes from upstream when known so clients
+                # don't rely on connection-close for EOF.
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
                 cl = resp.headers.get("Content-Length")
                 if cl:
                     self.send_header("Content-Length", cl)
@@ -362,7 +385,10 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                         chunk = resp.read(65536)
                         if not chunk:
                             break
-                        self.wfile.write(chunk)
+                        try:
+                            self.wfile.write(chunk)
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
                 finally:
                     resp.close()
 
@@ -385,10 +411,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             f"  http://{host}/channel/<slug>/media.m3u8\n"
             f"  http://{host}/health                 — health check\n"
         ).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(body)
+        self._write_body(200, "text/plain; charset=utf-8", body)
 
     def _handle_playlist(self):
         """Emit a rewritten M3U pointing at /channel/<slug> for each upstream entry.
@@ -429,16 +452,14 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             return
 
         body = ("\n".join(lines) + "\n").encode("utf-8")
-        self.send_response(200)
         # audio/x-mpegurl marks this as a playlist (list of channels), not an
         # HLS media playlist. application/vnd.apple.mpegurl triggers browsers
         # and VLC to try single-stream HLS playback instead of parsing entries.
-        self.send_header("Content-Type", "audio/x-mpegurl")
-        self.send_header("Content-Disposition", 'attachment; filename="playlist.m3u"')
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(body)
+        self._write_body(200, "audio/x-mpegurl", body, [
+            ("Content-Disposition", 'attachment; filename="playlist.m3u"'),
+            ("Access-Control-Allow-Origin", "*"),
+            ("Cache-Control", "no-cache"),
+        ])
 
     def _handle_channel(self, slug, is_media_request: bool = False):
         """Resolve a fresh m3u8 for a channel and proxy it.
@@ -473,22 +494,17 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                     f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}\n"
                     f"/channel/{slug}/media.m3u8\n"
                 ).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                self.wfile.write(master)
+                self._write_body(200, "application/vnd.apple.mpegurl", master, [
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Cache-Control", "no-cache"),
+                ])
                 return
 
             content = self._rewrite_playlist(content, m3u8_url)
-
-            self.send_response(200)
-            self.send_header("Content-Type", "application/vnd.apple.mpegurl")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(content)
+            self._write_body(200, "application/vnd.apple.mpegurl", content, [
+                ("Access-Control-Allow-Origin", "*"),
+                ("Cache-Control", "no-cache"),
+            ])
 
         except Exception as e:
             self.send_error(502, f"Upstream error: {e}")
