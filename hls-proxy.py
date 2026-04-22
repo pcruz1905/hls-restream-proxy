@@ -55,6 +55,8 @@ _channel_referer = {}
 # Parsed upstream M3U: list of (slug, extinf_line, url)
 _upstream_m3u = []
 _upstream_m3u_fetched_at = 0.0
+# Per-channel #EXTINF line built from channels.conf (slug -> extinf)
+_channel_extinf = {}
 
 
 def _slugify(s: str) -> str:
@@ -154,8 +156,20 @@ def _load_channels():
                 parts = line.split("|")
                 if len(parts) >= 6:
                     slug = parts[0]
+                    name = parts[1].strip() if len(parts) >= 2 else slug
+                    chno = parts[2].strip() if len(parts) >= 3 else ""
+                    logo = parts[3].strip() if len(parts) >= 4 else ""
+                    group = parts[4].strip() if len(parts) >= 5 else ""
                     source_url = parts[5]
                     channels[slug] = source_url
+                    extinf_attrs = [f'tvg-id="{slug}"']
+                    if chno:
+                        extinf_attrs.append(f'tvg-chno="{chno}"')
+                    if logo:
+                        extinf_attrs.append(f'tvg-logo="{logo}"')
+                    if group:
+                        extinf_attrs.append(f'group-title="{group}"')
+                    _channel_extinf[slug] = f'#EXTINF:-1 {" ".join(extinf_attrs)},{name or slug}'
                     mode = parts[6].strip().lower() if len(parts) >= 7 and parts[6].strip() else "iframe"
                     referer = parts[7].strip() if len(parts) >= 8 and parts[7].strip() else ""
                     _channel_mode[slug] = mode
@@ -267,6 +281,10 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"ok")
             return
 
+        if parsed.path == "/":
+            self._handle_index()
+            return
+
         if parsed.path == "/playlist.m3u":
             self._handle_playlist()
             return
@@ -351,6 +369,27 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error(502, f"Upstream error: {e}")
 
+    def _handle_index(self):
+        """Plain-text landing page describing available endpoints."""
+        host = self.headers.get("Host", f"{BIND_ADDR}:{PORT}").split("/", 1)[0]
+        upstream = "configured" if UPSTREAM_M3U_URL else "not set (HLS_UPSTREAM_M3U_URL)"
+        channels_loaded = len(_upstream_m3u)
+        body = (
+            f"hls-restream-proxy\n"
+            f"==================\n\n"
+            f"Upstream M3U:   {upstream}\n"
+            f"Channels loaded: {channels_loaded}\n\n"
+            f"Endpoints:\n"
+            f"  http://{host}/playlist.m3u           — M3U for your media player\n"
+            f"  http://{host}/channel/<slug>         — single channel (master playlist)\n"
+            f"  http://{host}/channel/<slug>/media.m3u8\n"
+            f"  http://{host}/health                 — health check\n"
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle_playlist(self):
         """Emit a rewritten M3U pointing at /channel/<slug> for each upstream entry.
 
@@ -358,20 +397,44 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
         media player so every stream is proxied and receives the declared
         BANDWIDTH wrapper.
         """
-        _refresh_upstream_m3u()
-        if not _upstream_m3u:
-            self.send_error(404, "No upstream M3U configured (set HLS_UPSTREAM_M3U_URL)")
-            return
+        # Refresh both sources so the playlist reflects current state
+        channels = _load_channels()
         host_header = self.headers.get("Host", f"{BIND_ADDR}:{PORT}")
         # Strip any path/query an attacker might smuggle via Host (defense in depth)
         host_header = host_header.split("/", 1)[0]
         lines = ["#EXTM3U"]
+        emitted = set()
+
+        # channels.conf entries first (user-curated order)
+        for slug in channels:
+            if slug in emitted or slug not in _channel_extinf:
+                continue
+            lines.append(_channel_extinf[slug])
+            lines.append(f"http://{host_header}/channel/{slug}")
+            emitted.add(slug)
+
+        # Then upstream-M3U entries that weren't overridden by channels.conf
         for slug, extinf, _url in _upstream_m3u:
+            if slug in emitted:
+                continue
             lines.append(extinf)
             lines.append(f"http://{host_header}/channel/{slug}")
+            emitted.add(slug)
+
+        if not emitted:
+            self.send_error(
+                404,
+                "No channels configured (set HLS_UPSTREAM_M3U_URL or populate channels.conf)",
+            )
+            return
+
         body = ("\n".join(lines) + "\n").encode("utf-8")
         self.send_response(200)
-        self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+        # audio/x-mpegurl marks this as a playlist (list of channels), not an
+        # HLS media playlist. application/vnd.apple.mpegurl triggers browsers
+        # and VLC to try single-stream HLS playback instead of parsing entries.
+        self.send_header("Content-Type", "audio/x-mpegurl")
+        self.send_header("Content-Disposition", 'attachment; filename="playlist.m3u"')
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
