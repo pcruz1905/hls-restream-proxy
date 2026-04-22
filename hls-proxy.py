@@ -34,6 +34,13 @@ ALLOWED_IPS = set(filter(None, os.environ.get("HLS_ALLOWED_IPS", "").split(","))
 # single-variant media playlists, which forces transcoding on bandwidth-limited
 # clients. 0 / unset = do not emit a master wrapper.
 DEFAULT_BANDWIDTH = int(os.environ.get("HLS_DEFAULT_BANDWIDTH", "0")) or 0
+# Optional upstream M3U playlist (e.g. Dispatcharr) — if set, the proxy fetches
+# this URL and auto-registers every #EXTINF entry as a literal-mode channel, so
+# /playlist.m3u can be handed to the media player with DEFAULT_BANDWIDTH applied
+# to each stream.
+UPSTREAM_M3U_URL = os.environ.get("HLS_UPSTREAM_M3U_URL", "")
+UPSTREAM_M3U_REFERER = os.environ.get("HLS_UPSTREAM_M3U_REFERER", "")
+UPSTREAM_M3U_TTL = int(os.environ.get("HLS_UPSTREAM_M3U_TTL", str(CACHE_TTL)))
 
 # Cache: slug -> {m3u8_url, embed_host, fetched_at}
 _channel_cache = {}
@@ -45,6 +52,88 @@ _channel_bandwidth = {}
 _channel_mode = {}
 # Per-channel declared referer from channels.conf field 8 (used by literal mode)
 _channel_referer = {}
+# Parsed upstream M3U: list of (slug, extinf_line, url)
+_upstream_m3u = []
+_upstream_m3u_fetched_at = 0.0
+
+
+def _slugify(s: str) -> str:
+    """Reduce a string to a URL-safe channel slug."""
+    s = re.sub(r"[^A-Za-z0-9_-]+", "-", s).strip("-").lower()
+    return s or "channel"
+
+
+def _refresh_upstream_m3u() -> None:
+    """Fetch and parse UPSTREAM_M3U_URL, registering entries as literal channels.
+
+    Cached for UPSTREAM_M3U_TTL seconds. On fetch failure the previous entries
+    are retained so transient upstream errors don't wipe the channel list.
+    """
+    global _upstream_m3u, _upstream_m3u_fetched_at
+    if not UPSTREAM_M3U_URL:
+        return
+    now = time.time()
+    if _upstream_m3u and (now - _upstream_m3u_fetched_at) < UPSTREAM_M3U_TTL:
+        return
+
+    try:
+        req = urllib.request.Request(UPSTREAM_M3U_URL, headers={"User-Agent": UPSTREAM_UA})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        print(f"[hls-proxy] Failed to fetch upstream M3U: {e}")
+        return
+
+    entries = []
+    seen = set()
+    current_extinf = None
+    idx = 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#EXTINF"):
+            current_extinf = line
+            continue
+        if line.startswith("#"):
+            continue
+        if current_extinf is None:
+            continue
+
+        idx += 1
+        tvg_id = re.search(r'tvg-id="([^"]*)"', current_extinf)
+        name_match = re.search(r",\s*(.+)$", current_extinf)
+        base = ""
+        if tvg_id and tvg_id.group(1).strip():
+            base = tvg_id.group(1).strip()
+        elif name_match and name_match.group(1).strip():
+            base = name_match.group(1).strip()
+        else:
+            base = f"ch{idx}"
+        slug = _slugify(base)
+        orig_slug = slug
+        n = 1
+        while slug in seen:
+            n += 1
+            slug = f"{orig_slug}-{n}"
+        seen.add(slug)
+        entries.append((slug, current_extinf, line))
+
+        _channel_mode[slug] = "literal"
+        if UPSTREAM_M3U_REFERER:
+            _channel_referer[slug] = UPSTREAM_M3U_REFERER
+        # Invalidate stale cache so a refreshed upstream URL replaces the old one
+        _channel_cache.pop(slug, None)
+        host_match = re.match(r"https?://[^/]+", line)
+        if host_match:
+            _referer_map.setdefault(host_match.group(0), UPSTREAM_M3U_REFERER)
+
+        current_extinf = None
+
+    if entries:
+        _upstream_m3u = entries
+        _upstream_m3u_fetched_at = now
+        print(f"[hls-proxy] Loaded {len(entries)} channels from upstream M3U")
 
 
 def _load_channels():
@@ -56,36 +145,42 @@ def _load_channels():
             if os.path.exists(p):
                 conf = p
                 break
-    if not conf or not os.path.exists(conf):
-        return channels
-    with open(conf) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("|")
-            if len(parts) >= 6:
-                slug = parts[0]
-                source_url = parts[5]
-                channels[slug] = source_url
-                mode = parts[6].strip().lower() if len(parts) >= 7 and parts[6].strip() else "iframe"
-                referer = parts[7].strip() if len(parts) >= 8 and parts[7].strip() else ""
-                _channel_mode[slug] = mode
-                if referer:
-                    _channel_referer[slug] = referer
-                # Literal mode: source_url IS the m3u8. Pre-seed _referer_map so
-                # /proxy?url=... requests for this upstream host use the right
-                # Referer without needing a successful /channel/ scrape first.
-                if mode == "literal" and referer:
-                    upstream_host = re.match(r"https?://[^/]+", source_url)
-                    if upstream_host:
-                        _referer_map[upstream_host.group(0)] = referer
-                # Optional 9th field: declared BANDWIDTH in bits/sec
-                if len(parts) >= 9 and parts[8].strip():
-                    try:
-                        _channel_bandwidth[slug] = int(parts[8].strip())
-                    except ValueError:
-                        pass
+    if conf and os.path.exists(conf):
+        with open(conf) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("|")
+                if len(parts) >= 6:
+                    slug = parts[0]
+                    source_url = parts[5]
+                    channels[slug] = source_url
+                    mode = parts[6].strip().lower() if len(parts) >= 7 and parts[6].strip() else "iframe"
+                    referer = parts[7].strip() if len(parts) >= 8 and parts[7].strip() else ""
+                    _channel_mode[slug] = mode
+                    if referer:
+                        _channel_referer[slug] = referer
+                    # Literal mode: source_url IS the m3u8. Pre-seed _referer_map so
+                    # /proxy?url=... requests for this upstream host use the right
+                    # Referer without needing a successful /channel/ scrape first.
+                    if mode == "literal" and referer:
+                        upstream_host = re.match(r"https?://[^/]+", source_url)
+                        if upstream_host:
+                            _referer_map[upstream_host.group(0)] = referer
+                    # Optional 9th field: declared BANDWIDTH in bits/sec
+                    if len(parts) >= 9 and parts[8].strip():
+                        try:
+                            _channel_bandwidth[slug] = int(parts[8].strip())
+                        except ValueError:
+                            pass
+
+    # Overlay entries from the upstream M3U (if configured). File entries win
+    # on slug collisions so the user can override a specific channel by hand.
+    _refresh_upstream_m3u()
+    for slug, _extinf, url in _upstream_m3u:
+        channels.setdefault(slug, url)
+
     return channels
 
 
@@ -172,6 +267,10 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"ok")
             return
 
+        if parsed.path == "/playlist.m3u":
+            self._handle_playlist()
+            return
+
         # /channel/<slug>              — master playlist (if bandwidth declared)
         # /channel/<slug>/media.m3u8   — underlying media playlist
         if parsed.path.startswith("/channel/"):
@@ -251,6 +350,32 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
 
         except Exception as e:
             self.send_error(502, f"Upstream error: {e}")
+
+    def _handle_playlist(self):
+        """Emit a rewritten M3U pointing at /channel/<slug> for each upstream entry.
+
+        Used when HLS_UPSTREAM_M3U_URL is configured — hand this URL to the
+        media player so every stream is proxied and receives the declared
+        BANDWIDTH wrapper.
+        """
+        _refresh_upstream_m3u()
+        if not _upstream_m3u:
+            self.send_error(404, "No upstream M3U configured (set HLS_UPSTREAM_M3U_URL)")
+            return
+        host_header = self.headers.get("Host", f"{BIND_ADDR}:{PORT}")
+        # Strip any path/query an attacker might smuggle via Host (defense in depth)
+        host_header = host_header.split("/", 1)[0]
+        lines = ["#EXTM3U"]
+        for slug, extinf, _url in _upstream_m3u:
+            lines.append(extinf)
+            lines.append(f"http://{host_header}/channel/{slug}")
+        body = ("\n".join(lines) + "\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_channel(self, slug, is_media_request: bool = False):
         """Resolve a fresh m3u8 for a channel and proxy it.
@@ -346,16 +471,21 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
+    # Preload channels (including upstream M3U) so /playlist.m3u works on first request.
+    _load_channels()
     server = http.server.HTTPServer((BIND_ADDR, PORT), HLSProxyHandler)
     print(f"[hls-proxy] Listening on {BIND_ADDR}:{PORT}")
     if ALLOWED_IPS:
         print(f"[hls-proxy] Allowed IPs: {', '.join(ALLOWED_IPS)}")
     else:
         print(f"[hls-proxy] WARNING: No IP allowlist set (HLS_ALLOWED_IPS). All clients accepted.")
+    if UPSTREAM_M3U_URL:
+        print(f"[hls-proxy] Upstream M3U: {UPSTREAM_M3U_URL} (refresh every {UPSTREAM_M3U_TTL}s)")
     print(f"[hls-proxy] Endpoints:")
     print(f"  /proxy?url=<encoded_url>       — proxy with headers")
     print(f"  /channel/<slug>                — auto-resolve fresh m3u8 (master if bandwidth set)")
     print(f"  /channel/<slug>/media.m3u8     — underlying media playlist")
+    print(f"  /playlist.m3u                  — rewritten M3U from upstream (if configured)")
     print(f"  /health                        — health check")
     try:
         server.serve_forever()
