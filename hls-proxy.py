@@ -462,14 +462,17 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
         ])
 
     def _handle_channel(self, slug, is_media_request: bool = False):
-        """Resolve a fresh m3u8 for a channel and proxy it.
+        """Resolve a channel's upstream and proxy it.
 
-        When a channel has a declared BANDWIDTH (either via channels.conf
-        field 9 or HLS_DEFAULT_BANDWIDTH) and the upstream is a single-variant
-        media playlist, the /channel/<slug> response is wrapped in a thin
-        master playlist carrying that BANDWIDTH. This prevents Jellyfin from
-        falling back to its ~20 Mbps default guess and force-transcoding on
-        bandwidth-capped clients.
+        The upstream can be either HLS (a .m3u8 playlist) or a direct stream
+        (MPEG-TS, MP4, etc.). This is detected from the upstream response's
+        Content-Type and URL path, then handled accordingly:
+
+        - HLS: read the playlist, optionally wrap in a thin master carrying
+          a BANDWIDTH tag (so Jellyfin does not assume its ~20 Mbps default),
+          and rewrite segment URLs to route through /proxy.
+        - Direct stream: pass through chunk-by-chunk. BANDWIDTH wrapping is
+          skipped — it is an HLS-only concept and would break MPEG-TS.
         """
         m3u8_url, embed_host = _get_channel_m3u8(slug)
         if not m3u8_url:
@@ -482,9 +485,38 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                 "User-Agent": UPSTREAM_UA,
                 "Referer": referer,
             })
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                content = resp.read()
+            resp = urllib.request.urlopen(req, timeout=15)
+            upstream_ct = resp.headers.get("Content-Type", "") or ""
+            path = m3u8_url.split("?", 1)[0].rstrip("/")
+            is_hls = "mpegurl" in upstream_ct.lower() or path.endswith(".m3u8")
 
+            if not is_hls:
+                # Direct stream (Dispatcharr MPEG-TS, ErsatzTV, raw MP4, …).
+                # Don't buffer — these broadcasts never end. Stream through.
+                self.send_response(200)
+                self.send_header("Content-Type", upstream_ct or "video/mp2t")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                cl = resp.headers.get("Content-Length")
+                if cl:
+                    self.send_header("Content-Length", cl)
+                self.end_headers()
+                try:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        try:
+                            self.wfile.write(chunk)
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+                finally:
+                    resp.close()
+                return
+
+            content = resp.read()
+            resp.close()
             bandwidth = _channel_bandwidth.get(slug) or DEFAULT_BANDWIDTH
             is_master = b"#EXT-X-STREAM-INF" in content
 
