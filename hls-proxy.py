@@ -533,6 +533,8 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             content = self._rewrite_playlist(content, m3u8_url)
+            if bandwidth and is_master:
+                content = self._override_master_bandwidth(content, bandwidth)
             self._write_body(200, "application/vnd.apple.mpegurl", content, [
                 ("Access-Control-Allow-Origin", "*"),
                 ("Cache-Control", "no-cache"),
@@ -540,6 +542,32 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
 
         except Exception as e:
             self.send_error(502, f"Upstream error: {e}")
+
+    def _override_master_bandwidth(self, content: bytes, bandwidth: int) -> bytes:
+        """Pin BANDWIDTH on every variant of an upstream master playlist.
+
+        Some upstreams ship a master that omits BANDWIDTH or advertises a value
+        Jellyfin treats as its ~20 Mbps default — which forces transcoding on
+        bandwidth-limited clients. Rewrites every #EXT-X-STREAM-INF (and any
+        AVERAGE-BANDWIDTH) so the configured value wins.
+        """
+        text = content.decode("utf-8", errors="replace")
+        out = []
+        for line in text.splitlines():
+            if line.startswith("#EXT-X-STREAM-INF"):
+                if re.search(r"BANDWIDTH=\d+", line):
+                    line = re.sub(r"BANDWIDTH=\d+", f"BANDWIDTH={bandwidth}", line)
+                else:
+                    line = line.replace(
+                        "#EXT-X-STREAM-INF:",
+                        f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},",
+                        1,
+                    )
+                line = re.sub(
+                    r"AVERAGE-BANDWIDTH=\d+", f"AVERAGE-BANDWIDTH={bandwidth}", line
+                )
+            out.append(line)
+        return "\n".join(out).encode("utf-8")
 
     def _rewrite_playlist(self, content: bytes, playlist_url: str) -> bytes:
         """Rewrite URLs in m3u8 playlists to route through this proxy."""
